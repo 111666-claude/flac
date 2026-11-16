@@ -10,6 +10,7 @@ import (
 	"github.com/mewkiz/flac/internal/hashutil/crc16"
 	"github.com/mewkiz/flac/internal/hashutil/crc8"
 	"github.com/mewkiz/flac/internal/utf8"
+	"github.com/mewkiz/flac/meta"
 	"github.com/mewkiz/pkg/errutil"
 )
 
@@ -17,8 +18,21 @@ import (
 
 // WriteFrame encodes the given audio frame to the output stream. The Num field
 // of the frame header is automatically calculated by the encoder.
+//
+// If an error occurs after encoding of the frame has begun, the error is
+// sticky: subsequent calls to WriteFrame and Close report it, and the output
+// stream must not be treated as valid.
 func (enc *Encoder) WriteFrame(f *frame.Frame) error {
+	if enc.closed {
+		return ErrEncoderClosed
+	}
+	if enc.writeErr != nil {
+		return enc.writeErr
+	}
 	// Sanity checks.
+	if len(f.Subframes) == 0 {
+		return errutil.Newf("frame contains no subframes")
+	}
 	nchannels := int(enc.Info.NChannels)
 	if nchannels != len(f.Subframes) {
 		return errutil.Newf("subframe and channel count mismatch; expected %d, got %d", nchannels, len(f.Subframes))
@@ -32,6 +46,18 @@ func (enc *Encoder) WriteFrame(f *frame.Frame) error {
 	if nchannels != f.Channels.Count() {
 		return errutil.Newf("channel count mismatch; expected %d, got %d", nchannels, f.Channels.Count())
 	}
+	if nsamplesPerChannel == 0 {
+		return errutil.Newf("invalid number of samples per channel (0)")
+	}
+	if nsamplesPerChannel > math.MaxUint16 {
+		return errutil.Newf("invalid number of samples per channel (%d); expected <= %d", nsamplesPerChannel, math.MaxUint16)
+	}
+
+	// Record the offset of the frame header before encoding, so that a seek
+	// point can be recorded for the frame. The offset is relative to the first
+	// byte of the first frame header.
+	frameStart := enc.w.n
+	sampleNum := enc.nsamples
 
 	// Create a new CRC-16 hash writer which adds the data from all write
 	// operations to a running hash.
@@ -58,7 +84,7 @@ func (enc *Encoder) WriteFrame(f *frame.Frame) error {
 	// Add unencoded audio samples to running MD5 hash.
 	f.Hash(enc.md5sum)
 	if err := enc.encodeFrameHeader(hw, f.Header); err != nil {
-		return errutil.Err(err)
+		return enc.failWrite(err)
 	}
 
 	// Inter-channel decorrelation of subframe samples.
@@ -95,14 +121,14 @@ func (enc *Encoder) WriteFrame(f *frame.Frame) error {
 		}
 
 		if err := encodeSubframe(bw, f.Header, subframe, bps); err != nil {
-			return errutil.Err(err)
+			return enc.failWrite(err)
 		}
 	}
 
 	// Zero-padding to byte alignment.
 	// Flush pending writes to subframe.
 	if _, err := bw.Align(); err != nil {
-		return errutil.Err(err)
+		return enc.failWrite(err)
 	}
 
 	// CRC-16 (polynomial = x^16 + x^15 + x^2 + x^0, initialized with 0) of
@@ -110,10 +136,33 @@ func (enc *Encoder) WriteFrame(f *frame.Frame) error {
 	// code.
 	crc := h.Sum16()
 	if err := binary.Write(enc.w, binary.BigEndian, crc); err != nil {
-		return errutil.Err(err)
+		return enc.failWrite(err)
 	}
 
+	// Record the seek point of the completed frame only after it has been
+	// written in full, so that a failed write never produces an index point
+	// with a bogus offset.
+	if enc.seekTable {
+		enc.addSeekPoint(meta.SeekPoint{
+			SampleNum: sampleNum,
+			Offset:    uint64(frameStart - enc.metaEnd),
+			NSamples:  blockSize,
+		})
+	}
+	enc.nframes++
+
 	return nil
+}
+
+// failWrite records err as the sticky write error of the encoder and returns
+// it. Once an audio frame has been partially written, the recorded offsets of
+// seek points can no longer be trusted.
+func (enc *Encoder) failWrite(err error) error {
+	err = errutil.Err(err)
+	if enc.writeErr == nil {
+		enc.writeErr = err
+	}
+	return err
 }
 
 // --- [ Frame header ] --------------------------------------------------------

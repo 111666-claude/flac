@@ -8,6 +8,8 @@ import (
 	"log"
 
 	"github.com/mewkiz/flac"
+	"github.com/mewkiz/flac/frame"
+	"github.com/mewkiz/flac/meta"
 )
 
 func ExampleParseFile() {
@@ -118,4 +120,97 @@ func ExampleOpen() {
 	//     sample 2: 152
 	//
 	// decoded audio md5sum valid: true
+}
+
+func ExampleEncoder_EnableSeekTable() {
+	// Encode a synthetic stream to a rewindable in-memory writer, and generate
+	// a seek table with at most 16 index points.
+	info := &meta.StreamInfo{
+		BlockSizeMin:  1024,
+		BlockSizeMax:  1024,
+		SampleRate:    44100,
+		NChannels:     1,
+		BitsPerSample: 16,
+	}
+	// A seek table is reserved while writing the metadata section and filled
+	// in when the encoder is closed, and therefore requires an io.WriteSeeker.
+	// *bytes.Buffer is not one; use a file or another rewindable writer.
+	ws := &exampleWriteSeeker{}
+	enc, err := flac.NewEncoder(ws, info)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := enc.EnableSeekTable(16); err != nil {
+		log.Fatal(err)
+	}
+	const nframes = 40
+	for n := 0; n < nframes; n++ {
+		f := &frame.Frame{Header: frame.Header{
+			HasFixedBlockSize: true,
+			BlockSize:         1024,
+			SampleRate:        44100,
+			Channels:          frame.ChannelsMono,
+			BitsPerSample:     16,
+		}}
+		samples := make([]int32, 1024)
+		f.Subframes = []*frame.Subframe{{
+			SubHeader: frame.SubHeader{Pred: frame.PredVerbatim},
+			Samples:   samples,
+			NSamples:  len(samples),
+		}}
+		if err := enc.WriteFrame(f); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if err := enc.Close(); err != nil {
+		log.Fatal(err)
+	}
+
+	// Read back the generated seek table.
+	stream, err := flac.Parse(bytes.NewReader(ws.buf))
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, block := range stream.Blocks {
+		if table, ok := block.Body.(*meta.SeekTable); ok {
+			npoints := 0
+			for _, point := range table.Points {
+				if point.SampleNum == meta.PlaceholderPoint {
+					continue
+				}
+				npoints++
+			}
+			fmt.Printf("seek points: %d\n", npoints)
+		}
+	}
+	// Output:
+	// seek points: 16
+}
+
+// exampleWriteSeeker is an in-memory io.WriteSeeker for the example.
+type exampleWriteSeeker struct {
+	buf []byte
+	pos int64
+}
+
+func (w *exampleWriteSeeker) Write(p []byte) (int, error) {
+	end := w.pos + int64(len(p))
+	if end > int64(len(w.buf)) {
+		w.buf = append(w.buf, make([]byte, end-int64(len(w.buf)))...)
+	}
+	copy(w.buf[w.pos:], p)
+	w.pos = end
+	return len(p), nil
+}
+
+func (w *exampleWriteSeeker) Seek(offset int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+		w.pos = offset
+	case io.SeekCurrent:
+		w.pos += offset
+	case io.SeekEnd:
+		w.pos = int64(len(w.buf)) + offset
+	}
+	return w.pos, nil
 }
