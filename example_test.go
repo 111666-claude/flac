@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 
 	"github.com/mewkiz/flac"
 )
@@ -118,4 +119,43 @@ func ExampleOpen() {
 	//     sample 2: 152
 	//
 	// decoded audio md5sum valid: true
+}
+
+func ExampleStream_OpenTrack() {
+	// Cue sheet aware streams are opened with NewSeek, which parses all
+	// metadata blocks including the CueSheet.
+	f, err := os.Open("meta/testdata/input-SCPAP.flac")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+	stream, err := flac.NewSeek(f)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Track 2 of this file starts at sample 2940; the lead-out track starts at
+	// sample 5880.
+	track, err := stream.OpenTrack(2)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer track.Close()
+
+	fmt.Printf("track %d: samples [%d, %d), %d samples, %d bytes\n",
+		track.Number(), track.Start(), track.End(), track.NSamples(), track.Length())
+
+	// Seek to the beginning of the track and read its first sample frame.
+	if _, err := track.SeekSample(0, io.SeekStart); err != nil {
+		log.Fatal(err)
+	}
+	samples := [][]int32{make([]int32, 1), make([]int32, 1)}
+	if _, err := track.ReadSamples(samples); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("first sample: left=%d right=%d\n", samples[0][0], samples[1][0])
+
+	// Output:
+	// track 2: samples [2940, 5880), 2940 samples, 11760 bytes
+	// first sample: left=0 right=0
 }

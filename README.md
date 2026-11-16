@@ -20,6 +20,51 @@ Documentation provided by GoDoc.
 [flac/frame]: http://pkg.go.dev/github.com/mewkiz/flac/frame
 [flac/meta]: http://pkg.go.dev/github.com/mewkiz/flac/meta
 
+## Track views
+
+A FLAC stream may embed a [CueSheet][cuesheet] metadata block that splits a
+single album image into tracks. `Stream.OpenTrack` exposes one track as a
+bounded `io.ReadSeeker` that decodes the original FLAC frames:
+
+```go
+stream, err := flac.NewSeek(f) // NewSeek parses the CueSheet.
+if err != nil {
+    log.Fatal(err)
+}
+track, err := stream.OpenTrack(2)
+if err != nil {
+    log.Fatal(err)
+}
+defer track.Close()
+
+// Read/write track-local positions; position zero is the first sample of the
+// track, and reads never cross into the next track or the lead-out.
+if _, err := track.SeekSample(0, io.SeekStart); err != nil {
+    log.Fatal(err)
+}
+samples := [][]int32{make([]int32, 1024), make([]int32, 1024)}
+n, err := track.ReadSamples(samples)
+```
+
+`Read` and `Seek` use interleaved, signed, little-endian PCM byte offsets,
+matching `io.ReadSeeker`. `ReadSamples` and `SeekSample` work in inter-channel
+samples, `Index`/`SeekIndex` expose the CueSheet index points, and `Start`,
+`End`, `NSamples` and `Length` describe the track. Track boundaries may fall in
+the middle of a frame, including in variable-blocksize streams.
+
+Views share the stream's underlying reader. Concurrent use of several views of
+one stream is safe (operations are serialized), but a view must not be used at
+the same time as `Stream.Next`, `Stream.ParseNext` or `Stream.Seek`.
+
+Errors are explicit and support `errors.Is`: `ErrNoCueSheet`,
+`ErrNoSeeker`, `ErrTrackNotFound`, `ErrLeadOutTrack`, `ErrDuplicateTrackNum`,
+`ErrMissingLeadOut`, `ErrInvalidCueSheet`, `ErrIndexNotFound`,
+`ErrIndexOutOfBounds` and `ErrSeekOutOfRange`. In particular, a CueSheet
+without a lead-out is rejected rather than guessing the last track's length
+from `StreamInfo.NSamples`.
+
+[cuesheet]: https://xiph.org/flac/format.html#metadata_block_cuesheet
+
 ## Changes
 
 * Version 1.0.14 (2026-08-19)

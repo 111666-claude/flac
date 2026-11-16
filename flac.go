@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/mewkiz/flac/frame"
 	"github.com/mewkiz/flac/internal/bufseekio"
@@ -59,6 +60,19 @@ type Stream struct {
 	// dataStart is the offset of the first frame header since SeekPoint.Offset
 	// is relative to this position.
 	dataStart int64
+
+	// seekable reports whether the underlying reader implements io.Seeker and
+	// thus whether TrackViews may be opened for this stream.
+	seekable bool
+
+	// cueSheet is the CueSheet metadata block of the stream; nil if the stream
+	// contains no CueSheet block or if the block was skipped during parsing.
+	cueSheet *meta.CueSheet
+
+	// viewMu serializes access to the underlying reader by TrackViews. The
+	// reader has a single position, and TrackViews reposition it whenever the
+	// requested sample is not covered by their cached frame.
+	viewMu sync.Mutex
 
 	// Underlying io.Reader, or io.ReadCloser.
 	r io.Reader
@@ -96,9 +110,13 @@ func New(r io.Reader) (stream *Stream, err error) {
 // NewSeek returns a Stream that has seeking enabled. The incoming io.ReadSeeker
 // will not be buffered, which might result in performance issues. Using an
 // in-memory buffer like *bytes.Reader should work well.
+//
+// Unlike New, NewSeek parses all metadata blocks. In particular, a CueSheet
+// metadata block is retained and may be used to open bounded track views with
+// Stream.OpenTrack.
 func NewSeek(rs io.ReadSeeker) (stream *Stream, err error) {
 	br := bufseekio.NewReadSeeker(rs)
-	stream = &Stream{r: br, seekTableSize: defaultSeekTableSize}
+	stream = &Stream{r: br, seekTableSize: defaultSeekTableSize, seekable: true}
 
 	// Verify FLAC signature and parse the StreamInfo metadata block.
 	block, err := stream.parseStreamInfo()
@@ -117,8 +135,11 @@ func NewSeek(rs io.ReadSeeker) (stream *Stream, err error) {
 			}
 		}
 
-		if block.Header.Type == meta.TypeSeekTable {
-			stream.seekTable = block.Body.(*meta.SeekTable)
+		switch body := block.Body.(type) {
+		case *meta.SeekTable:
+			stream.seekTable = body
+		case *meta.CueSheet:
+			stream.cueSheet = body
 		}
 	}
 
@@ -238,6 +259,9 @@ func Parse(r io.Reader) (stream *Stream, err error) {
 			if err = block.Skip(); err != nil {
 				return stream, err
 			}
+		}
+		if cs, ok := block.Body.(*meta.CueSheet); ok {
+			stream.cueSheet = cs
 		}
 		stream.Blocks = append(stream.Blocks, block)
 	}
