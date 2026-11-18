@@ -33,6 +33,15 @@ func (enc *Encoder) WriteFrame(f *frame.Frame) error {
 		return errutil.Newf("channel count mismatch; expected %d, got %d", nchannels, f.Channels.Count())
 	}
 
+	// Optional stereo analysis: select the stereo channel assignment
+	// (independent, left/side, right/side or mid/side) yielding the fewest
+	// estimated encoded bits. The channel assignment of the caller's frame is
+	// restored before WriteFrame returns.
+	origChannels := f.Channels
+	if enc.StereoAnalysisEnabled && f.Channels.Count() == 2 {
+		f.Channels = analyzeStereo(f, uint(f.BitsPerSample))
+	}
+
 	// Create a new CRC-16 hash writer which adds the data from all write
 	// operations to a running hash.
 	h := crc16.NewIBM()
@@ -62,6 +71,11 @@ func (enc *Encoder) WriteFrame(f *frame.Frame) error {
 	}
 
 	// Inter-channel decorrelation of subframe samples.
+	//
+	// NOTE: the channel assignment is restored after f.Correlate (defers run
+	// in LIFO order), so that Correlate still sees the channel assignment used
+	// for encoding.
+	defer func() { f.Channels = origChannels }() // NOTE: restore channel assignment of caller's frame after encoding is done (to make encode non-destructive).
 	f.Decorrelate()
 	defer f.Correlate() // NOTE: revert decorrelation of audio samples after encoding is done (to make encode non-destructive).
 

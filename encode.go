@@ -29,6 +29,9 @@ type Encoder struct {
 	curNum uint64
 	// AnalysisEnabled indicates whether analysis is enabled for the encoder.
 	AnalysisEnabled bool
+	// StereoAnalysisEnabled indicates whether adaptive stereo channel
+	// assignment is enabled for the encoder.
+	StereoAnalysisEnabled bool
 }
 
 // NewEncoder returns a new FLAC encoder for the given metadata StreamInfo block
@@ -116,4 +119,15 @@ func (enc *Encoder) Close() error {
 // (constant, fixed or verbatim) based on size.
 func (enc *Encoder) EnablePredictionAnalysis(enable bool) {
 	enc.AnalysisEnabled = enable
+}
+
+// EnableStereoAnalysis specifies whether to enable adaptive stereo channel
+// assignment for the encoder. When enabled, each stereo frame is encoded using
+// the channel assignment (independent, left/side, right/side or mid/side)
+// that yields the fewest estimated encoded bits, and the chosen assignment is
+// recorded in the frame header. The samples and channel assignment of the
+// caller's frame are left unmodified. Stereo analysis is disabled by default,
+// in which case the channel assignment of each frame is used as-is.
+func (enc *Encoder) EnableStereoAnalysis(enable bool) {
+	enc.StereoAnalysisEnabled = enable
 }
