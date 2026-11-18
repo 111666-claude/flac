@@ -23,6 +23,7 @@ Documentation provided by GoDoc.
 ## Changes
 
 * Version 1.0.14 (TBA)
+    - Add sample-accurate range reading via `Stream.ReadRange`, which decodes an exact `[start, start+nsamples)` interval of interleaved PCM from a seekable FLAC stream, cropping across variable-size frames without buffering the whole range.
     - Make parsing more robust against corrupt/malicious FLAC files (see [#77](https://github.com/mewkiz/flac/pull/77)). Thanks to [Alex Svetkin](https://github.com/whisk).
 
 * Version 1.0.13 (2025-07-11)
